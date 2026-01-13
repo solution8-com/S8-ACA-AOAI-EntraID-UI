@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import time
@@ -8,6 +9,7 @@ import azure.identity.aio
 import httpx
 import openai
 import redis.asyncio as redis
+from redis.exceptions import RedisError
 from azure.keyvault.secrets.aio import SecretClient
 from identity.quart import Auth
 from quart import (
@@ -99,8 +101,15 @@ async def configure_clients():
     else:
         bp.n8n_webhook_url = os.getenv("N8N_WEBHOOK_URL")
         bp.n8n_bearer_token = os.getenv("N8N_BEARER_TOKEN")
-        bp.n8n_timeout = int(os.getenv("N8N_TIMEOUT_MS") or "30000") / 1000
+        timeout_ms = os.getenv("N8N_TIMEOUT_MS")
+        try:
+            timeout_ms = int(timeout_ms) if timeout_ms else 30000
+        except ValueError:
+            current_app.logger.warning("Invalid N8N_TIMEOUT_MS value %r, defaulting to 30000", timeout_ms)
+            timeout_ms = 30000
+        bp.n8n_timeout = timeout_ms / 1000
         bp.session_store = {}
+        bp.session_store_lock = asyncio.Lock()
 
     bp.cache = await setup_redis()
     current_app.config["SESSION_TYPE"] = "redis"
@@ -202,33 +211,65 @@ async def chat_handler(*, context):
 
 
 def _n8n_message_text(n8n_response):
+    def _extract_from_dict(source):
+        for key in ("reply", "response", "answer", "text", "message", "output", "result"):
+            value = source.get(key)
+            if isinstance(value, str):
+                return value
+        return None
+
     if isinstance(n8n_response, str):
         return n8n_response
     if isinstance(n8n_response, dict):
-        for key in ("reply", "response", "answer", "text", "message", "output", "result"):
-            value = n8n_response.get(key)
-            if isinstance(value, str):
-                return value
+        direct_value = _extract_from_dict(n8n_response)
+        if direct_value:
+            return direct_value
         body = n8n_response.get("body")
         if isinstance(body, dict):
-            for key in ("reply", "response", "answer", "text", "message", "output", "result"):
-                value = body.get(key)
-                if isinstance(value, str):
-                    return value
+            nested_value = _extract_from_dict(body)
+            if nested_value:
+                return nested_value
         if isinstance(body, str):
             return body
     return ""
 
 
+def _user_key_from_context(context):
+    user = context.get("user", {}) if context else {}
+    if not hasattr(bp, "anonymous_user_key"):
+        bp.anonymous_user_key = uuid.uuid4().hex
+    fallback_key = bp.anonymous_user_key
+    return user.get("oid") or user.get("id") or user.get("preferred_username") or user.get("name") or fallback_key
+
+
 async def _session_id_for_user(context, messages):
-    user = context.get("user", {})
-    user_key = user.get("oid") or user.get("id") or user.get("preferred_username") or user.get("name") or "anonymous"
+    lock = getattr(bp, "session_store_lock", None)
+    if lock:
+        async with lock:
+            return await _session_id_for_user_inner(context, messages)
+    return await _session_id_for_user_inner(context, messages)
+
+
+async def _session_id_for_user_inner(context, messages):
+    user_key = _user_key_from_context(context)
     session_store = getattr(bp, "session_store", {})
+    # A new chat is inferred when there are no assistant turns yet in the submitted history.
     new_chat = not any(message.get("role") == "assistant" for message in messages)
-    if new_chat or user_key not in session_store:
-        session_store[user_key] = uuid.uuid4().hex
+    cached_session = session_store.get(user_key)
+    redis_key = f"chat_session:{user_key}"
+    try:
+        cached_session = await bp.cache.get(redis_key) or cached_session
+    except RedisError as exc:  # pragma: no cover - fallback path for missing redis
+        current_app.logger.warning("Redis session tracking unavailable, using in-memory fallback (%s)", exc.__class__.__name__)
+    if new_chat or not cached_session:
+        cached_session = uuid.uuid4().hex
+        session_store[user_key] = cached_session
+        try:
+            await bp.cache.set(redis_key, cached_session)
+        except RedisError:
+            pass
         bp.session_store = session_store
-    return session_store[user_key]
+    return cached_session
 
 
 async def stream_n8n(request_messages, context):

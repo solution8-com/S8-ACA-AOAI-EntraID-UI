@@ -15,13 +15,14 @@ class MockResponse:
         return self._payload
 
     def raise_for_status(self):
-        return None
+        return
 
 
 class MockAsyncClient:
     def __init__(self, *args, **kwargs):
         self.calls = []
-        self.response_payloads = kwargs.pop("response_payloads", None) or [{"reply": "hello"}]
+        response_payloads = kwargs.pop("response_payloads", None)
+        self.response_payloads = [{"reply": "hello"}] if response_payloads is None else response_payloads
         self.call_index = 0
 
     async def __aenter__(self):
