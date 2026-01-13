@@ -31,6 +31,13 @@ def get_azure_credential():
 
 
 async def setup_redis():
+    """
+    Configure and return a Redis client, choosing between Azure Redis (when RUNNING_IN_PRODUCTION is set) and a local Redis instance.
+    
+    This function sets bp.redis_username and, when using Azure Redis, obtains and stores bp.redis_token using the application Azure credential. It reads AZURE_REDIS_HOST and AZURE_REDIS_USER for Azure configuration; otherwise it uses localhost:6379 with no authentication. The returned Redis client has response decoding enabled.
+    Returns:
+        redis.Redis: A configured Redis client (decode_responses=True).
+    """
     azure_scope = "https://redis.azure.com/.default"
     use_azure_redis = os.getenv("RUNNING_IN_PRODUCTION") is not None
     if use_azure_redis:
@@ -56,11 +63,24 @@ async def setup_redis():
 
 
 def _chat_provider():
+    """
+    Determine the configured chat provider.
+    
+    Returns:
+        provider (str): The chat provider name in lowercase; defaults to "aoai" when CHAT_PROVIDER is not set.
+    """
     return (os.getenv("CHAT_PROVIDER") or "aoai").lower()
 
 
 @bp.before_app_serving
 async def configure_clients():
+    """
+    Initialize and configure external clients and application resources used by the chat blueprint.
+    
+    Sets bp.chat_provider and, depending on its value, configures either an OpenAI/Azure OpenAI client or n8n integration (webhook URL, bearer token, timeout, in-memory session store and lock). Initializes Redis and registers it as the Flask/Quart session store, determines the OAuth redirect URI for production vs. local development, retrieves the Azure auth client secret from Key Vault, and constructs bp.auth with that secret.
+    Raises:
+        ValueError: If using Azure OpenAI and either `AZURE_OPENAI_ENDPOINT` or `AZURE_OPENAI_CHATGPT_DEPLOYMENT` is not set.
+    """
     client_args = {}
     bp.chat_provider = _chat_provider()
     if bp.chat_provider == "aoai":
@@ -165,6 +185,11 @@ async def ensure_redis_token():
 
 @bp.after_app_serving
 async def shutdown_openai():
+    """
+    Close and release the OpenAI client and Azure credential stored on the blueprint.
+    
+    If an OpenAI client is attached to the blueprint as `bp.openai_client`, it will be closed; the blueprint's `bp.azure_credential` is then closed to release any held resources.
+    """
     if hasattr(bp, "openai_client"):
         await bp.openai_client.close()
     await bp.azure_credential.close()
@@ -179,10 +204,29 @@ async def index(*, context):
 @bp.post("/chat/stream")
 @login_required
 async def chat_handler(*, context):
+    """
+    Handle an incoming chat request and return a streaming HTTP response of assistant message chunks.
+    
+    Processes the JSON request body for "messages" and streams back assistant responses as JSON lines. When the blueprint is configured with provider "n8n", responses are produced by the configured n8n webhook and streamed through the handler. Otherwise, messages are sent to the configured OpenAI/Azure OpenAI chat completion endpoint and the first choice from each streamed event is emitted as a JSON line. On error, a single JSON line containing an "error" field is emitted.
+    
+    Parameters:
+        context (dict): Request context containing authenticated user information and other request-scoped state.
+    
+    Returns:
+        quart.Response: A streaming HTTP response that yields newline-terminated JSON objects representing assistant delta/content chunks or an error object.
+    """
     request_messages = (await request.get_json())["messages"]
 
     @stream_with_context
     async def response_stream():
+        """
+        Produce an asynchronous stream of newline-terminated JSON strings representing chat response chunks or an error.
+        
+        When the configured chat provider is "n8n", yields events produced by stream_n8n(request_messages, context). Otherwise, requests a streamed completion from the OpenAI/Azure client and yields the first choice from each streaming event as a JSON line; on failure yields a single JSON error line.
+         
+        Returns:
+            Newline-terminated JSON strings (`str`) for each streamed assistant chunk or a single error object.
+        """
         if getattr(bp, "chat_provider", "aoai") == "n8n":
             async for event in stream_n8n(request_messages, context):
                 yield event
@@ -211,6 +255,15 @@ async def chat_handler(*, context):
 
 
 def _n8n_message_text(n8n_response):
+    """
+    Extracts a human-readable text reply from an n8n webhook response payload.
+    
+    Parameters:
+        n8n_response (str | dict): The raw response body returned by an n8n webhook, either a plain string or a dictionary that may contain text in several common keys or inside a "body" sub-dictionary.
+    
+    Returns:
+        str: The first found string value from one of the keys "reply", "response", "answer", "text", "message", "output", or "result" (searched at the top level, then inside `body`), or the `body` string if `body` is a string. Returns an empty string if no suitable text is found.
+    """
     def _extract_from_dict(source):
         for key in ("reply", "response", "answer", "text", "message", "output", "result"):
             value = source.get(key)
@@ -235,6 +288,15 @@ def _n8n_message_text(n8n_response):
 
 
 def _user_key_from_context(context):
+    """
+    Derives a stable user key from the provided request context.
+    
+    Parameters:
+        context (dict | None): A context mapping that may contain a "user" mapping with identity fields.
+    
+    Returns:
+        str: The first available identifier from the user mapping in this order: `oid`, `id`, `preferred_username`, `name`. If none are present, returns a per-process fallback key (a hex UUID) stored on the module blueprint object; the fallback key is created and cached on first use.
+    """
     user = context.get("user", {}) if context else {}
     if not hasattr(bp, "anonymous_user_key"):
         bp.anonymous_user_key = uuid.uuid4().hex
@@ -243,6 +305,16 @@ def _user_key_from_context(context):
 
 
 async def _session_id_for_user(context, messages):
+    """
+    Obtain or create a session ID for the current user, using the blueprint's session lock if configured to serialize access.
+    
+    Parameters:
+        context (dict): Request context containing user information used to identify the user.
+        messages (list): List of chat messages for the current request used to determine whether this is a new chat.
+    
+    Returns:
+        str: A session ID associated with the user; returns an existing session ID when available or creates and returns a new one.
+    """
     lock = getattr(bp, "session_store_lock", None)
     if lock:
         async with lock:
@@ -251,6 +323,18 @@ async def _session_id_for_user(context, messages):
 
 
 async def _session_id_for_user_inner(context, messages):
+    """
+    Determine or create a per-user chat session ID based on the provided user context and message history.
+    
+    If an existing session ID is present in the in-memory session store or Redis, that value is returned. If no session exists or the messages indicate a new chat (no assistant turn present), a new session ID (UUID hex) is generated, saved to the in-memory store and (if available) persisted to Redis. Redis errors are ignored and result in using the in-memory fallback.
+    
+    Parameters:
+        context (dict): Request context containing user identity fields used to derive a user key.
+        messages (list): Sequence of message objects (dict-like) where each message may include a "role" key.
+    
+    Returns:
+        str: The session ID (UUID hex) associated with the user for this chat.
+    """
     user_key = _user_key_from_context(context)
     session_store = getattr(bp, "session_store", {})
     # A new chat is inferred when there are no assistant turns yet in the submitted history.
@@ -273,6 +357,18 @@ async def _session_id_for_user_inner(context, messages):
 
 
 async def stream_n8n(request_messages, context):
+    """
+    Stream a response from the configured n8n webhook as assistant message chunks.
+    
+    Sends the last user message and a session ID to the configured n8n webhook, yields a three-part streaming assistant message constructed by build_assistant_message for the webhook's reply, and yields a friendly error message if the webhook is not configured or the request fails.
+    
+    Parameters:
+        request_messages (list): Sequence of message dicts from the client; the last message's "content" is sent as the chat input.
+        context (dict): Request context containing user information used to resolve or create a session ID.
+    
+    Returns:
+        Iterator[str]: An async iterator that yields JSON-line strings representing streaming assistant chunks (start, content, end).
+    """
     if not getattr(bp, "n8n_webhook_url", None):
         error_text = "n8n webhook URL is not configured."
         for chunk in build_assistant_message(error_text):
@@ -305,6 +401,17 @@ async def stream_n8n(request_messages, context):
 
 
 def build_assistant_message(text):
+    """
+    Yield three JSON-formatted streaming chunks that represent an assistant message.
+    
+    Produces a start chunk (metadata and role), a content chunk containing `text`, and a final chunk with finish_reason "stop". Each yielded value is a JSON string (ensure_ascii=False) terminated with a newline.
+    
+    Parameters:
+        text (str): The assistant message content to emit in the content chunk.
+    
+    Returns:
+        generator: Yields three JSON string lines: start chunk, content chunk (containing `text`), and end chunk.
+    """
     start_chunk = {
         "delta": {"content": None, "function_call": None, "role": "assistant", "tool_calls": None},
         "finish_reason": None,
