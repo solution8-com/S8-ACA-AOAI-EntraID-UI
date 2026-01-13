@@ -1,9 +1,11 @@
 import json
 import os
 import time
+import uuid
 from functools import wraps
 
 import azure.identity.aio
+import httpx
 import openai
 import redis.asyncio as redis
 from azure.keyvault.secrets.aio import SecretClient
@@ -51,43 +53,54 @@ async def setup_redis():
     )
 
 
+def _chat_provider():
+    return (os.getenv("CHAT_PROVIDER") or "aoai").lower()
+
+
 @bp.before_app_serving
 async def configure_clients():
     client_args = {}
-    if os.getenv("LOCAL_OPENAI_ENDPOINT"):
-        # Use a local endpoint like llamafile server
-        current_app.logger.info("Using local OpenAI-compatible API with no key")
-        client_args["api_key"] = "no-key-required"
-        client_args["base_url"] = os.getenv("LOCAL_OPENAI_ENDPOINT")
-        bp.openai_client = openai.AsyncOpenAI(
-            **client_args,
-        )
-    else:
-        # Use an Azure OpenAI endpoint instead,
-        # either with a key or with keyless authentication
-        if os.getenv("AZURE_OPENAI_KEY"):
-            # Authenticate using an Azure OpenAI API key
-            # This is generally discouraged, but is provided for developers
-            # that want to develop locally inside the Docker container.
-            current_app.logger.info("Using Azure OpenAI with key")
-            client_args["api_key"] = os.getenv("AZURE_OPENAI_KEY")
-        else:
-            # Authenticate using the default Azure credential chain
-            # See https://docs.microsoft.com/azure/developer/python/azure-sdk-authenticate#defaultazurecredential
-            # This will *not* work inside a Docker container.
-            current_app.logger.info("Using Azure OpenAI with default credential")
-            client_args["azure_ad_token_provider"] = azure.identity.aio.get_bearer_token_provider(
-                get_azure_credential(), "https://cognitiveservices.azure.com/.default"
+    bp.chat_provider = _chat_provider()
+    if bp.chat_provider == "aoai":
+        if os.getenv("LOCAL_OPENAI_ENDPOINT"):
+            # Use a local endpoint like llamafile server
+            current_app.logger.info("Using local OpenAI-compatible API with no key")
+            client_args["api_key"] = "no-key-required"
+            client_args["base_url"] = os.getenv("LOCAL_OPENAI_ENDPOINT")
+            bp.openai_client = openai.AsyncOpenAI(
+                **client_args,
             )
-        if not os.getenv("AZURE_OPENAI_ENDPOINT"):
-            raise ValueError("AZURE_OPENAI_ENDPOINT is required for Azure OpenAI")
-        if not os.getenv("AZURE_OPENAI_CHATGPT_DEPLOYMENT"):
-            raise ValueError("AZURE_OPENAI_CHATGPT_DEPLOYMENT is required for Azure OpenAI")
-        bp.openai_client = openai.AsyncAzureOpenAI(
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION") or "2024-02-15-preview",
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            **client_args,
-        )
+        else:
+            # Use an Azure OpenAI endpoint instead,
+            # either with a key or with keyless authentication
+            if os.getenv("AZURE_OPENAI_KEY"):
+                # Authenticate using an Azure OpenAI API key
+                # This is generally discouraged, but is provided for developers
+                # that want to develop locally inside the Docker container.
+                current_app.logger.info("Using Azure OpenAI with key")
+                client_args["api_key"] = os.getenv("AZURE_OPENAI_KEY")
+            else:
+                # Authenticate using the default Azure credential chain
+                # See https://docs.microsoft.com/azure/developer/python/azure-sdk-authenticate#defaultazurecredential
+                # This will *not* work inside a Docker container.
+                current_app.logger.info("Using Azure OpenAI with default credential")
+                client_args["azure_ad_token_provider"] = azure.identity.aio.get_bearer_token_provider(
+                    get_azure_credential(), "https://cognitiveservices.azure.com/.default"
+                )
+            if not os.getenv("AZURE_OPENAI_ENDPOINT"):
+                raise ValueError("AZURE_OPENAI_ENDPOINT is required for Azure OpenAI")
+            if not os.getenv("AZURE_OPENAI_CHATGPT_DEPLOYMENT"):
+                raise ValueError("AZURE_OPENAI_CHATGPT_DEPLOYMENT is required for Azure OpenAI")
+            bp.openai_client = openai.AsyncAzureOpenAI(
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION") or "2024-02-15-preview",
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                **client_args,
+            )
+    else:
+        bp.n8n_webhook_url = os.getenv("N8N_WEBHOOK_URL")
+        bp.n8n_bearer_token = os.getenv("N8N_BEARER_TOKEN")
+        bp.n8n_timeout = int(os.getenv("N8N_TIMEOUT_MS") or "30000") / 1000
+        bp.session_store = {}
 
     bp.cache = await setup_redis()
     current_app.config["SESSION_TYPE"] = "redis"
@@ -143,7 +156,8 @@ async def ensure_redis_token():
 
 @bp.after_app_serving
 async def shutdown_openai():
-    await bp.openai_client.close()
+    if hasattr(bp, "openai_client"):
+        await bp.openai_client.close()
     await bp.azure_credential.close()
 
 
@@ -160,24 +174,117 @@ async def chat_handler(*, context):
 
     @stream_with_context
     async def response_stream():
-        # This sends all messages, so API request may exceed token limits
-        all_messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-        ] + request_messages
+        if getattr(bp, "chat_provider", "aoai") == "n8n":
+            async for event in stream_n8n(request_messages, context):
+                yield event
+        else:
+            # This sends all messages, so API request may exceed token limits
+            all_messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+            ] + request_messages
 
-        chat_coroutine = bp.openai_client.chat.completions.create(
-            # Azure Open AI takes the deployment name as the model name
-            model=os.environ["AZURE_OPENAI_CHATGPT_DEPLOYMENT"],
-            messages=all_messages,
-            stream=True,
-        )
-        try:
-            async for event in await chat_coroutine:
-                event_dict = event.model_dump()
-                if event_dict["choices"]:
-                    yield json.dumps(event_dict["choices"][0], ensure_ascii=False) + "\n"
-        except Exception as e:
-            current_app.logger.error(e)
-            yield json.dumps({"error": str(e)}, ensure_ascii=False) + "\n"
+            chat_coroutine = bp.openai_client.chat.completions.create(
+                # Azure Open AI takes the deployment name as the model name
+                model=os.environ["AZURE_OPENAI_CHATGPT_DEPLOYMENT"],
+                messages=all_messages,
+                stream=True,
+            )
+            try:
+                async for event in await chat_coroutine:
+                    event_dict = event.model_dump()
+                    if event_dict["choices"]:
+                        yield json.dumps(event_dict["choices"][0], ensure_ascii=False) + "\n"
+            except Exception as e:
+                current_app.logger.error(e)
+                yield json.dumps({"error": str(e)}, ensure_ascii=False) + "\n"
 
     return Response(response_stream())
+
+
+def _n8n_message_text(n8n_response):
+    if isinstance(n8n_response, str):
+        return n8n_response
+    if isinstance(n8n_response, dict):
+        for key in ("reply", "response", "answer", "text", "message", "output", "result"):
+            value = n8n_response.get(key)
+            if isinstance(value, str):
+                return value
+        body = n8n_response.get("body")
+        if isinstance(body, dict):
+            for key in ("reply", "response", "answer", "text", "message", "output", "result"):
+                value = body.get(key)
+                if isinstance(value, str):
+                    return value
+        if isinstance(body, str):
+            return body
+    return ""
+
+
+async def _session_id_for_user(context, messages):
+    user = context.get("user", {})
+    user_key = user.get("oid") or user.get("id") or user.get("preferred_username") or user.get("name") or "anonymous"
+    session_store = getattr(bp, "session_store", {})
+    new_chat = not any(message.get("role") == "assistant" for message in messages)
+    if new_chat or user_key not in session_store:
+        session_store[user_key] = uuid.uuid4().hex
+        bp.session_store = session_store
+    return session_store[user_key]
+
+
+async def stream_n8n(request_messages, context):
+    if not getattr(bp, "n8n_webhook_url", None):
+        error_text = "n8n webhook URL is not configured."
+        for chunk in build_assistant_message(error_text):
+            yield chunk
+        return
+
+    session_id = await _session_id_for_user(context, request_messages)
+    chat_input = request_messages[-1].get("content") if request_messages else ""
+    payload = {"chatInput": chat_input, "sessionId": session_id}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if bp.n8n_bearer_token:
+        headers["Authorization"] = f"Bearer {bp.n8n_bearer_token}"
+    try:
+        async with httpx.AsyncClient(timeout=bp.n8n_timeout) as client:
+            response = await client.post(bp.n8n_webhook_url, headers=headers, json=payload)
+            response.raise_for_status()
+            message_text = _n8n_message_text(response.json())
+            if not message_text:
+                message_text = "The chat service returned an empty response."
+            for chunk in build_assistant_message(message_text):
+                yield chunk
+    except Exception as e:
+        current_app.logger.error(e)
+        error_text = "Sorry, I could not reach the chat service. Please try again."
+        for chunk in build_assistant_message(error_text):
+            yield chunk
+
+
+def build_assistant_message(text):
+    start_chunk = {
+        "delta": {"content": None, "function_call": None, "role": "assistant", "tool_calls": None},
+        "finish_reason": None,
+        "index": 0,
+        "logprobs": None,
+        "content_filter_results": {},
+    }
+    yield json.dumps(start_chunk, ensure_ascii=False) + "\n"
+    content_chunk = {
+        "delta": {"content": text, "function_call": None, "role": None, "tool_calls": None},
+        "finish_reason": None,
+        "index": 0,
+        "logprobs": None,
+        "content_filter_results": {},
+    }
+    yield json.dumps(content_chunk, ensure_ascii=False) + "\n"
+    end_chunk = {
+        "delta": {"content": None, "function_call": None, "role": None, "tool_calls": None},
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": None,
+        "content_filter_results": {},
+    }
+    yield json.dumps(end_chunk, ensure_ascii=False) + "\n"
