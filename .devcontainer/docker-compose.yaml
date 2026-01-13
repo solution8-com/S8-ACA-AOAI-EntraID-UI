@@ -6,7 +6,7 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
       args:
-        IMAGE: python:3.12
+        IMAGE: python:3.12-bookworm
 
     volumes:
       - ..:/workspace:cached
