@@ -65,9 +65,9 @@ async def setup_redis():
 def _chat_provider():
     """
     Determine the configured chat provider.
-    
+
     Returns:
-        provider (str): The chat provider name in lowercase; defaults to "aoai" when CHAT_PROVIDER is not set.
+        str: The chat provider name in lowercase; defaults to "aoai" when CHAT_PROVIDER is not set.
     """
     return (os.getenv("CHAT_PROVIDER") or "aoai").lower()
 
@@ -82,6 +82,8 @@ async def configure_clients():
         ValueError: If using Azure OpenAI and either `AZURE_OPENAI_ENDPOINT` or `AZURE_OPENAI_CHATGPT_DEPLOYMENT` is not set.
     """
     client_args = {}
+    bp.session_store = {}
+    bp.session_store_lock = asyncio.Lock()
     bp.chat_provider = _chat_provider()
     if bp.chat_provider == "aoai":
         if os.getenv("LOCAL_OPENAI_ENDPOINT"):
@@ -118,9 +120,13 @@ async def configure_clients():
                 azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
                 **client_args,
             )
-    else:
+    elif bp.chat_provider == "n8n":
         bp.n8n_webhook_url = os.getenv("N8N_WEBHOOK_URL")
         bp.n8n_bearer_token = os.getenv("N8N_BEARER_TOKEN")
+        if not bp.n8n_webhook_url:
+            raise ValueError("N8N_WEBHOOK_URL is required when CHAT_PROVIDER=n8n")
+        if not bp.n8n_bearer_token:
+            raise ValueError("N8N_BEARER_TOKEN is required when CHAT_PROVIDER=n8n")
         timeout_ms = os.getenv("N8N_TIMEOUT_MS")
         try:
             timeout_ms = int(timeout_ms) if timeout_ms else 30000
@@ -128,8 +134,8 @@ async def configure_clients():
             current_app.logger.warning("Invalid N8N_TIMEOUT_MS value %r, defaulting to 30000", timeout_ms)
             timeout_ms = 30000
         bp.n8n_timeout = timeout_ms / 1000
-        bp.session_store = {}
-        bp.session_store_lock = asyncio.Lock()
+    else:
+        raise ValueError("CHAT_PROVIDER must be either 'aoai' or 'n8n'")
 
     bp.cache = await setup_redis()
     current_app.config["SESSION_TYPE"] = "redis"
@@ -215,7 +221,17 @@ async def chat_handler(*, context):
     Returns:
         quart.Response: A streaming HTTP response that yields newline-terminated JSON objects representing assistant delta/content chunks or an error object.
     """
-    request_messages = (await request.get_json())["messages"]
+    body = await request.get_json()
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list) or not messages:
+        return Response(json.dumps({"error": "messages array is required"}), status=400, mimetype="application/json")
+    if messages[-1].get("role") != "user" or "content" not in messages[-1]:
+        return Response(
+            json.dumps({"error": "last message must be a user message with content"}),
+            status=400,
+            mimetype="application/json",
+        )
+    request_messages = messages
 
     @stream_with_context
     async def response_stream():
@@ -351,8 +367,8 @@ async def _session_id_for_user_inner(context, messages):
         try:
             await bp.cache.set(redis_key, cached_session)
         except RedisError:
+            # If Redis is unavailable, fall back to in-memory session tracking.
             pass
-        bp.session_store = session_store
     return cached_session
 
 
@@ -388,13 +404,19 @@ async def stream_n8n(request_messages, context):
         async with httpx.AsyncClient(timeout=bp.n8n_timeout) as client:
             response = await client.post(bp.n8n_webhook_url, headers=headers, json=payload)
             response.raise_for_status()
-            message_text = _n8n_message_text(response.json())
+            try:
+                parsed = response.json()
+            except json.JSONDecodeError as exc:
+                current_app.logger.error("n8n response JSON decode error: %s", exc)
+                parsed = None
+            message_text = _n8n_message_text(parsed) if parsed is not None else ""
             if not message_text:
+                current_app.logger.warning("n8n response missing expected text content")
                 message_text = "The chat service returned an empty response."
             for chunk in build_assistant_message(message_text):
                 yield chunk
-    except Exception as e:
-        current_app.logger.error(e)
+    except httpx.HTTPError as e:
+        current_app.logger.error("n8n HTTP error: %s", e)
         error_text = "Sorry, I could not reach the chat service. Please try again."
         for chunk in build_assistant_message(error_text):
             yield chunk

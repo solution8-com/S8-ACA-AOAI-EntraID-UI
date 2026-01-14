@@ -43,6 +43,27 @@ async def test_chat_stream_text_history(client, snapshot):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_requires_messages(client):
+    response = await client.post("/chat/stream", json={"not_messages": []})
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_requires_user_last_message(client):
+    response = await client.post("/chat/stream", json={"messages": [{"role": "assistant", "content": "Hi"}]})
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invalid_chat_provider(monkeypatch, mock_keyvault_secretclient):
+    monkeypatch.setenv("CHAT_PROVIDER", "invalid")
+    quart_app = quartapp.create_app()
+    with pytest.raises(Exception):
+        async with quart_app.test_app():
+            pass
+
+
+@pytest.mark.asyncio
 async def test_openai_key(monkeypatch, mock_keyvault_secretclient):
     monkeypatch.setenv("AZURE_OPENAI_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "test-openai-service.openai.azure.com")

@@ -14,7 +14,11 @@ N8N_MISSING = not os.getenv("N8N_WEBHOOK_URL") or not os.getenv("N8N_BEARER_TOKE
 async def test_n8n_integration_real_webhook(
     monkeypatch, mock_defaultazurecredential, mock_keyvault_secretclient, mock_login_required
 ):
+    url = os.getenv("N8N_WEBHOOK_URL")
+    token = os.getenv("N8N_BEARER_TOKEN")
     monkeypatch.setenv("CHAT_PROVIDER", "n8n")
+    monkeypatch.setenv("N8N_WEBHOOK_URL", url)
+    monkeypatch.setenv("N8N_BEARER_TOKEN", token)
     quart_app = quartapp.create_app()
     async with quart_app.test_app() as test_app:
         quart_app.config.update({"TESTING": True})
@@ -42,3 +46,6 @@ async def test_n8n_integration_real_webhook(
         assert second.status_code == 200
         second_lines = [json.loads(line) for line in (await second.get_data()).splitlines() if line]
         assert any(line.get("delta", {}).get("content") for line in second_lines)
+        session_store = quart_app.blueprints["chat"].session_store
+        assert session_store
+        assert len(session_store.values()) == 1

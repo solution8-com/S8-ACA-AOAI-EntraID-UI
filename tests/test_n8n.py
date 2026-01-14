@@ -7,7 +7,7 @@ import quartapp
 
 
 class MockResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200, json_exc=None):
         """
         Initialize a mock HTTP response containing the given payload and a 200 status code.
         
@@ -15,7 +15,8 @@ class MockResponse:
             payload: JSON-serializable object to be returned by the response's `json()` method.
         """
         self._payload = payload
-        self.status_code = 200
+        self.status_code = status_code
+        self._json_exc = json_exc
 
     def json(self):
         """
@@ -24,6 +25,8 @@ class MockResponse:
         Returns:
             The payload object that was provided to the MockResponse when created (the stored JSON-parsable value).
         """
+        if self._json_exc:
+            raise self._json_exc
         return self._payload
 
     def raise_for_status(self):
@@ -32,6 +35,8 @@ class MockResponse:
         
         Used in tests to simulate an HTTP response whose status is ignored.
         """
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=None)
         return
 
 
@@ -87,6 +92,8 @@ class MockAsyncClient:
         payload = self.response_payloads[min(self.call_index, len(self.response_payloads) - 1)]
         self.calls.append({"url": url, "headers": headers or {}, "json": json})
         self.call_index += 1
+        if isinstance(payload, MockResponse):
+            return payload
         return MockResponse(payload)
 
 
@@ -157,3 +164,51 @@ async def test_session_id_reused_and_reset(monkeypatch, mock_defaultazurecredent
 
     assert first_session == second_session
     assert third_session != first_session
+
+
+@pytest.mark.asyncio
+async def test_n8n_missing_config(monkeypatch, mock_defaultazurecredential, mock_keyvault_secretclient, mock_login_required):
+    monkeypatch.delenv("N8N_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("N8N_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv("CHAT_PROVIDER", "n8n")
+    quart_app = quartapp.create_app()
+    with pytest.raises(Exception):
+        async with quart_app.test_app():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_n8n_http_error(monkeypatch, mock_defaultazurecredential, mock_keyvault_secretclient, mock_login_required):
+    error_response = MockResponse({"error": "bad"}, status_code=500)
+    mock_client = MockAsyncClient(response_payloads=[error_response])
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: mock_client)
+    monkeypatch.setenv("CHAT_PROVIDER", "n8n")
+    monkeypatch.setenv("N8N_WEBHOOK_URL", "https://example.test/webhook")
+    monkeypatch.setenv("N8N_BEARER_TOKEN", "token-value")
+
+    quart_app = quartapp.create_app()
+    async with quart_app.test_app() as test_app:
+        quart_app.config.update({"TESTING": True})
+        client = test_app.test_client()
+        response = await client.post("/chat/stream", json={"messages": [{"role": "user", "content": "Hello"}]})
+        lines = [json.loads(line) for line in (await response.get_data()).splitlines() if line]
+        assert any("Sorry" in (line.get("delta", {}).get("content") or "") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_n8n_invalid_json(monkeypatch, mock_defaultazurecredential, mock_keyvault_secretclient, mock_login_required):
+    json_exc = json.JSONDecodeError("bad", "{}", 0)
+    error_response = MockResponse(payload=None, json_exc=json_exc)
+    mock_client = MockAsyncClient(response_payloads=[error_response])
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: mock_client)
+    monkeypatch.setenv("CHAT_PROVIDER", "n8n")
+    monkeypatch.setenv("N8N_WEBHOOK_URL", "https://example.test/webhook")
+    monkeypatch.setenv("N8N_BEARER_TOKEN", "token-value")
+
+    quart_app = quartapp.create_app()
+    async with quart_app.test_app() as test_app:
+        quart_app.config.update({"TESTING": True})
+        client = test_app.test_client()
+        response = await client.post("/chat/stream", json={"messages": [{"role": "user", "content": "Hello"}]})
+        lines = [json.loads(line) for line in (await response.get_data()).splitlines() if line]
+        assert any("empty response" in (line.get("delta", {}).get("content") or "") for line in lines)
