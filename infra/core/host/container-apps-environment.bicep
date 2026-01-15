@@ -6,6 +6,16 @@ param daprEnabled bool = false
 param logAnalyticsWorkspaceName string
 param applicationInsightsName string = ''
 
+@description('Storage account name for file share')
+param storageAccountName string = ''
+
+@description('Storage account key for file share')
+@secure()
+param storageAccountKey string = ''
+
+@description('File share name')
+param fileShareName string = ''
+
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2022-03-01' = {
   name: name
   location: location
@@ -19,6 +29,19 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2022-03-01'
       }
     }
     daprAIInstrumentationKey: daprEnabled && !empty(applicationInsightsName) ? applicationInsights.properties.InstrumentationKey : ''
+  }
+}
+
+resource storage 'Microsoft.App/managedEnvironments/storages@2022-03-01' = if (!empty(storageAccountName)) {
+  parent: containerAppsEnvironment
+  name: 'appdata'
+  properties: {
+    azureFile: {
+      accountName: storageAccountName
+      accountKey: storageAccountKey
+      shareName: fileShareName
+      accessMode: 'ReadWrite'
+    }
   }
 }
 
