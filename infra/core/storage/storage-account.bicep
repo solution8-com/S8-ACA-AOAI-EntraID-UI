@@ -41,7 +41,7 @@ resource fileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2022-0
   parent: fileServices
   name: fileShareName
   properties: {
-    shareQuota: 5120 // 5GB quota
+    shareQuota: 5120 // 5120 MiB (5 GiB) quota
   }
 }
 

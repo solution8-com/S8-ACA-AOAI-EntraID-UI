@@ -75,6 +75,8 @@ After deployment, verify the volume mount in the Azure Portal:
 3. Select **Volume mounts** tab
 4. Confirm the file share is mounted at `/home/`
 
+Reference screenshot showing the expected configuration:
+
 ![Volume Mount Configuration](../New%20Project.png)
 
 ## Security Considerations
