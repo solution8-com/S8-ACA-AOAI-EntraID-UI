@@ -106,7 +106,7 @@ resource app 'Microsoft.App/containerApps@2022-03-01' = {
           }
           volumeMounts: !empty(storageVolumeName) ? [
             {
-              volumeName: 'appdata'
+              volumeName: storageVolumeName
               mountPath: storageMountPath
             }
           ] : []
@@ -118,7 +118,7 @@ resource app 'Microsoft.App/containerApps@2022-03-01' = {
       }
       volumes: !empty(storageVolumeName) ? [
         {
-          name: 'appdata'
+          name: storageVolumeName
           storageType: 'AzureFile'
           storageName: storageVolumeName
         }
