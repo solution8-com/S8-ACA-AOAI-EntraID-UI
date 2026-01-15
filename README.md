@@ -15,8 +15,9 @@ since the local app needs credentials for Microsoft Entra and Azure OpenAI to wo
 
 * A Python [Quart](https://quart.palletsprojects.com/en/latest/) backend that uses the [identity](https://pypi.org/project/identity/) and [msal](https://pypi.org/project/msal/) packages to authenticate users with Microsoft Entra, and the [openai](https://pypi.org/project/openai/) package to generate responses to user messages. Sessions are stored in Redis.
 * A basic HTML/JS frontend that streams responses from the backend using [JSON Lines](http://jsonlines.org/) over a [ReadableStream](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream).
-* [Bicep files](https://docs.microsoft.com/azure/azure-resource-manager/bicep/) for provisioning Azure resources, including an Azure OpenAI resource, Azure Container Apps, Azure Container Registry, Azure Cache for Redis, and Azure Log Analytics.
+* [Bicep files](https://docs.microsoft.com/azure/azure-resource-manager/bicep/) for provisioning Azure resources, including an Azure OpenAI resource, Azure Container Apps, Azure Container Registry, Azure Cache for Redis, Azure Storage (for persistent volume mounts), and Azure Log Analytics.
 * Python scripts that use the [msgraph-sdk](https://pypi.org/project/msgraph-sdk/) package to create a Microsoft Entra application and service principal, and to grant the service principal permissions to the application.
+* Persistent volume mounts at `/home/` for MSAL token caching across container restarts. See [Volume Mount Configuration](docs/volume-mount.md) for details.
 
 ![Screenshot of the chat app](docs/screenshot_chatapp.png)
 
@@ -211,6 +212,7 @@ You can try the [Azure pricing calculator](https://azure.com/e/2176802ea14941e49
 - Azure Container App: Consumption tier with 0.5 CPU, 1GiB memory/storage. Pricing is based on resource allocation, and each month allows for a certain amount of free usage. [Pricing](https://azure.microsoft.com/pricing/details/container-apps/)
 - Azure Container Registry: Basic tier. [Pricing](https://azure.microsoft.com/pricing/details/container-registry/)
 - Azure Cache for Redis: Basic tier. [Pricing](https://azure.microsoft.com/pricing/details/cache/)
+- Azure Storage Account: Standard LRS with 5GB file share for persistent volume mounts (~$0.10-0.20/month). [Pricing](https://azure.microsoft.com/pricing/details/storage/files/)
 - Log analytics: Pay-as-you-go tier. Costs based on data ingested. [Pricing](https://azure.microsoft.com/pricing/details/monitor/)
 
 ⚠️ To avoid unnecessary costs, remember to take down your app if it's no longer in use,
