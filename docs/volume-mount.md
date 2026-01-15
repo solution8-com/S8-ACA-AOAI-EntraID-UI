@@ -46,6 +46,8 @@ The volume mount configuration consists of:
 
 ## Deployment
 
+### Automatic Deployment (Recommended)
+
 The volume mount is automatically configured when deploying with `azd up`. The infrastructure includes:
 
 ```bicep
@@ -65,6 +67,22 @@ module storageAccount 'core/storage/storage-account.bicep' = {
 storageVolumeName: 'appdata'
 storageMountPath: '/home/'
 ```
+
+### Manual Deployment (Azure Cloud Shell)
+
+If you need to manually configure the volume mount on an existing deployment, use the provided Azure Cloud Shell script:
+
+1. Navigate to [Azure Cloud Shell](https://shell.azure.com)
+2. Upload the script from `scripts/setup-volume-mount.sh`
+3. Follow the instructions in [`scripts/VOLUME_MOUNT_SETUP.md`](../scripts/VOLUME_MOUNT_SETUP.md)
+
+The script will:
+- Create or verify the storage account exists
+- Create the `app-data` file share
+- Register the storage in your Container Apps Environment
+- Provide verification steps
+
+**Note:** After running the script, you must still update your Container App deployment to mount the volume (via Bicep, Portal, or CLI).
 
 ## Verification
 
