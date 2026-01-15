@@ -63,12 +63,29 @@ jobs:
 
       - name: Provision Infrastructure
         run: |
+          # Use existing resource group and infrastructure
+          azd env set AZURE_RESOURCE_GROUP "RG-AI-Regent-DEV" --no-prompt
+          azd env set AZURE_CONTAINER_REGISTRY_NAME "regentdockerregistry" --no-prompt
+          azd env set AZURE_CONTAINER_APPS_ENVIRONMENT_NAME "cae-mw10" --no-prompt
+          azd env set SERVICE_ACA_RESOURCE_EXISTS "true" --no-prompt
+          azd env set AZURE_OPENAI_RESOURCE "cog-mw10-cohere" --no-prompt
+          azd env set AZURE_OPENAI_RESOURCE_GROUP "RG-AI-Regent-DEV" --no-prompt
+          azd env set AZURE_OPENAI_RESOURCE_GROUP_LOCATION "westeurope" --no-prompt
+          
+          # Disable automatic role creation (guest user limitation)
           azd env set CREATE_ROLE_FOR_USER false --no-prompt
+          
+          # Use existing App Registration for auth
+          azd env set AZURE_AUTH_CLIENT_ID "${{ vars.AZURE_AUTH_CLIENT_ID }}" --no-prompt
+          azd env set AZURE_AUTH_CLIENT_SECRET "${{ secrets.AZURE_AUTH_CLIENT_SECRET }}" --no-prompt
+          azd env set AZURE_AUTH_TENANT_ID "${{ vars.AZURE_AUTH_TENANT_ID }}" --no-prompt
+          
           azd provision --no-prompt
+          
         env:
           AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
           AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars. AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy Application
         run: azd deploy --no-prompt
