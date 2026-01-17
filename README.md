@@ -167,6 +167,18 @@ python -m quart --app src.quartapp run --port 50505 --reload
 
 This will start the app on port 50505, and you can access it at `http://localhost:50505`.
 
+If you're running locally on your own machine, use the local helper (OrbStack/Docker):
+
+```shell
+./scripts/dev_local.sh
+```
+
+If you're running in a GitHub-hosted agent environment, use:
+
+```shell
+./scripts/dev_local_github.sh
+```
+
 To save costs during development, you may point the app at a [local LLM server](docs/local_ollama.md).
 
 ## n8n webhook provider (server-to-server)
