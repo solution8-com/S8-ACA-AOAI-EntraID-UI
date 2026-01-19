@@ -7,7 +7,6 @@ on:
     branches:
       - copilot/add-n8n-webhook-chat-backend  
 
-
 # GitHub Actions workflow to deploy to Azure using azd
 # To configure required secrets for connecting to Azure, simply run `azd pipeline config`
 
@@ -40,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install azd
-        uses: Azure/setup-azd@v2.0.0
+        uses: Azure/setup-azd@v2.1.0
 
       - name: Setup python
         uses: actions/setup-python@v5
