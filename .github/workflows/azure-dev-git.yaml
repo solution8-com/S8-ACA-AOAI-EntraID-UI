@@ -55,7 +55,7 @@ jobs:
       - name: Provision Infrastructure
         run: |
           # Select existing environment or create if missing
-          azd env select "${{ vars.AZURE_ENV_NAME }}" || azd env new "${{ vars.AZURE_ENV_NAME }}"
+          azd env new "ci-dev" || azd env select "ci-dev"
           
           # Use existing resource group and infrastructure
           azd env set AZURE_RESOURCE_GROUP "RG-AI-Regent-DEV" --no-prompt
