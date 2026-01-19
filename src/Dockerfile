@@ -33,4 +33,4 @@ USER app
 
 EXPOSE 50505
 
-ENTRYPOINT ["tini", "gunicorn", "quartapp:create_app()"]
+ENTRYPOINT ["tini", "gunicorn", "-b", "0.0.0.0:50505", "quartapp:create_app()"]

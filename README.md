@@ -167,7 +167,49 @@ python -m quart --app src.quartapp run --port 50505 --reload
 
 This will start the app on port 50505, and you can access it at `http://localhost:50505`.
 
+If you're running locally on your own machine, use the local helper (OrbStack/Docker):
+
+```shell
+./scripts/dev_local.sh
+```
+
+If you're running in a GitHub-hosted agent environment, use:
+
+```shell
+./scripts/dev_local_github.sh
+```
+
 To save costs during development, you may point the app at a [local LLM server](docs/local_ollama.md).
+
+## n8n webhook provider (server-to-server)
+
+The default chat provider remains Azure OpenAI. To enable the alternative n8n webhook backend (while keeping Microsoft Entra login mandatory), set the following environment variables:
+
+* `CHAT_PROVIDER=n8n`
+* `N8N_WEBHOOK_URL` (full webhook URL from your n8n workflow)
+* `N8N_BEARER_TOKEN` (used only server-side in the Authorization header)
+* Optional: `N8N_TIMEOUT_MS` (defaults to 30000)
+
+On each user turn the backend POSTs to the webhook with:
+
+```json
+{"chatInput": "<latest user message>", "sessionId": "<stable id per chat thread>"}
+```
+
+The server keeps the `sessionId` per signed-in user and reuses it while the request history contains prior assistant turns; a new chat (no assistant turns in the payload) receives a new `sessionId`. The n8n reply is wrapped into the existing JSON Lines stream contract, for example:
+
+```
+{"delta":{"content":null,"function_call":null,"role":"assistant","tool_calls":null},"finish_reason":null,"index":0,"logprobs":null,"content_filter_results":{}}
+{"delta":{"content":"Hello from n8n","function_call":null,"role":null,"tool_calls":null},"finish_reason":null,"index":0,"logprobs":null,"content_filter_results":{}}
+{"delta":{"content":null,"function_call":null,"role":null,"tool_calls":null},"finish_reason":"stop","index":0,"logprobs":null,"content_filter_results":{}}
+```
+
+Authentication continues to rely on Entra; the n8n webhook is called only from the server and the bearer token is never exposed to the browser.
+
+### Tests
+
+* Unit tests: `pytest`
+* Real n8n integration test (env-gated): `pytest tests/test_n8n_integration.py` after setting `CHAT_PROVIDER=n8n`, `N8N_WEBHOOK_URL`, and `N8N_BEARER_TOKEN` (see `next-steps.md` for the bearer token placeholder to fill).
 
 ## Costs
 
