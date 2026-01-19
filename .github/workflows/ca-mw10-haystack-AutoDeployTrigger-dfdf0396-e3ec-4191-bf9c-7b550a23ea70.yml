@@ -1,0 +1,45 @@
+name: Trigger auto deployment for ca-mw10-haystack
+
+# When this action will be executed
+on:
+  # Automatically trigger it when detected changes in repo
+  push:
+    branches: 
+      [ copilot/add-n8n-webhook-chat-backend ]
+    paths:
+    - '**'
+    - '.github/workflows/ca-mw10-haystack-AutoDeployTrigger-dfdf0396-e3ec-4191-bf9c-7b550a23ea70.yml'
+
+  # Allow manual trigger 
+  workflow_dispatch:
+      
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout to the branch
+        uses: actions/checkout@v2
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.CAMW10HAYSTACK_AZURE_CREDENTIALS }}
+
+      - name: Build and push container image to registry
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          appSourcePath: ${{ github.workspace }},
+          _dockerfilePathKey_: _dockerfilePath_
+          _targetLabelKey_: _targetLabel_
+          registryUrl: regentdockerregistry-f9aefth8aqhddxd4.azurecr.io
+          registryUsername: ${{ secrets.CAMW10HAYSTACK_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.CAMW10HAYSTACK_REGISTRY_PASSWORD }}
+          containerAppName: ca-mw10-haystack
+          resourceGroup: RG-AI-Regent-DEV
+          imageToBuild: regentdockerregistry-f9aefth8aqhddxd4.azurecr.io/ca-mw10-haystack:${{ github.sha }}
+          
+            
+
+     
+
