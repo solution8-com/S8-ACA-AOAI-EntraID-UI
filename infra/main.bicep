@@ -48,6 +48,19 @@ resource openAiResourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' exi
 var prefix = '${name}-${resourceToken}'
 
 var openAiDeploymentName = 'chatgpt'
+
+// Storage account for persistent volume mounts
+module storageAccount 'core/storage/storage-account.bicep' = {
+  name: 'storage'
+  scope: resourceGroup
+  params: {
+    name: '${replace(prefix, '-', '')}storage'
+    location: location
+    tags: tags
+    fileShareName: 'app-data'
+  }
+}
+
 module openAi 'core/ai/cognitiveservices.bicep' = {
   name: 'openai'
   scope: openAiResourceGroup
@@ -135,6 +148,9 @@ module containerApps 'core/host/container-apps.bicep' = {
     containerAppsEnvironmentName: '${prefix}-containerapps-env'
     containerRegistryName: '${replace(prefix, '-', '')}registry'
     logAnalyticsWorkspaceName: logAnalyticsWorkspace.outputs.name
+    storageAccountName: storageAccount.outputs.name
+    storageAccountKey: storageAccount.outputs.primaryKey
+    fileShareName: storageAccount.outputs.fileShareName
   }
 }
 

@@ -7,6 +7,16 @@ param containerRegistryName string
 param logAnalyticsWorkspaceName string
 param applicationInsightsName string = ''
 
+@description('Storage account name for file share')
+param storageAccountName string = ''
+
+@description('Storage account key for file share')
+@secure()
+param storageAccountKey string = ''
+
+@description('File share name')
+param fileShareName string = ''
+
 module containerAppsEnvironment 'container-apps-environment.bicep' = {
   name: '${name}-container-apps-environment'
   params: {
@@ -15,6 +25,9 @@ module containerAppsEnvironment 'container-apps-environment.bicep' = {
     tags: tags
     logAnalyticsWorkspaceName: logAnalyticsWorkspaceName
     applicationInsightsName: applicationInsightsName
+    storageAccountName: storageAccountName
+    storageAccountKey: storageAccountKey
+    fileShareName: fileShareName
   }
 }
 

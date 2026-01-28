@@ -25,6 +25,12 @@ param identityName string
 @description('Enabled Ingress for container app')
 param ingressEnabled bool = true
 
+@description('Storage volume name from environment')
+param storageVolumeName string = ''
+
+@description('Mount path for storage volume')
+param storageMountPath string = ''
+
 // Dapr Options
 @description('Enable Dapr')
 param daprEnabled bool = false
@@ -98,12 +104,25 @@ resource app 'Microsoft.App/containerApps@2022-03-01' = {
             cpu: json(containerCpuCoreCount)
             memory: containerMemory
           }
+          volumeMounts: !empty(storageVolumeName) ? [
+            {
+              volumeName: storageVolumeName
+              mountPath: storageMountPath
+            }
+          ] : []
         }
       ]
       scale: {
         minReplicas: containerMinReplicas
         maxReplicas: containerMaxReplicas
       }
+      volumes: !empty(storageVolumeName) ? [
+        {
+          name: storageVolumeName
+          storageType: 'AzureFile'
+          storageName: storageVolumeName
+        }
+      ] : []
     }
   }
 }

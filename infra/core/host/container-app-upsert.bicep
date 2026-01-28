@@ -40,6 +40,12 @@ param containerCpuCoreCount string = '0.5'
 @description('Memory allocated to a single container instance, e.g. 1Gi')
 param containerMemory string = '1.0Gi'
 
+@description('Storage volume name from environment')
+param storageVolumeName string = ''
+
+@description('Mount path for storage volume')
+param storageMountPath string = ''
+
 resource existingApp 'Microsoft.App/containerApps@2022-03-01' existing = if (exists) {
   name: name
 }
@@ -67,6 +73,8 @@ module app 'container-app.bicep' = {
     env: env
     imageName: exists ? existingApp.properties.template.containers[0].image : ''
     targetPort: targetPort
+    storageVolumeName: storageVolumeName
+    storageMountPath: storageMountPath
   }
 }
 

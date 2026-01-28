@@ -16,6 +16,12 @@ param authClientId string
 param authAuthority string
 param redisHost string
 
+@description('Storage volume name from environment')
+param storageVolumeName string = 'appdata'
+
+@description('Mount path for storage volume')
+param storageMountPath string = '/home/'
+
 resource acaIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: identityName
   location: location
@@ -78,6 +84,8 @@ module app 'core/host/container-app-upsert.bicep' = {
       }
     ]
     targetPort: 50505
+    storageVolumeName: storageVolumeName
+    storageMountPath: storageMountPath
   }
 }
 
